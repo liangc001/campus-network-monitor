@@ -11,6 +11,7 @@ param(
     [switch]$EnableStartup,
     [switch]$DisableStartup,
     [switch]$RepairTasks,
+    [switch]$ForceAuthenticate,
     [switch]$RepairOnStart,
     [switch]$StartMonitorAfterRepair,
     [switch]$ShowConfig,
@@ -19,7 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$monitorModeRequested = $RunMonitor -or $Once -or $Setup -or $InstallTask -or $StopTask -or $UninstallTask -or $EnableStartup -or $DisableStartup -or $RepairTasks -or $ShowConfig
+$monitorModeRequested = $RunMonitor -or $Once -or $Setup -or $InstallTask -or $StopTask -or $UninstallTask -or $EnableStartup -or $DisableStartup -or $RepairTasks -or $ForceAuthenticate -or $ShowConfig
 if ($monitorModeRequested) {
     $compiledRoot = [string](Get-Variable -Name ScriptRoot -ValueOnly -ErrorAction SilentlyContinue)
     $isCompiledHost = -not [string]::IsNullOrWhiteSpace($compiledRoot)
@@ -63,6 +64,7 @@ if ($monitorModeRequested) {
     if ($EnableStartup) { $monitorParameters['EnableStartup'] = $true }
     if ($DisableStartup) { $monitorParameters['DisableStartup'] = $true }
     if ($RepairTasks) { $monitorParameters['RepairTasks'] = $true }
+    if ($ForceAuthenticate) { $monitorParameters['ForceAuthenticate'] = $true }
     if ($ShowConfig) { $monitorParameters['ShowConfig'] = $true }
 
     # Invoke the component from its text so restrictive execution policies do

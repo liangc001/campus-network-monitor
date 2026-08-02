@@ -9,6 +9,7 @@ param(
     [switch]$EnableStartup,
     [switch]$DisableStartup,
     [switch]$RepairTasks,
+    [switch]$ForceAuthenticate,
     [switch]$ShowConfig,
     [string]$EntryPath = ''
 )
@@ -436,8 +437,12 @@ function ConvertTo-PortalRsaHex {
             $chunk = $chunk.PadRight($chunkSize, [char]0)
         }
 
-        # JavaScript charCodeAt() values are packed as little-endian UTF-16.
-        $inputBytes = [System.Text.Encoding]::Unicode.GetBytes($chunk)
+        # RSAUtils.encryptedString packs one low byte from each JavaScript
+        # character code, two characters per 16-bit little-endian digit.
+        $inputBytes = New-Object byte[] $chunkSize
+        for ($index = 0; $index -lt $chunkSize; $index++) {
+            $inputBytes[$index] = ([byte]([int][char]$chunk[$index] -band 0xFF))
+        }
         $blockBytes = New-Object byte[] ($inputBytes.Length + 1)
         [Array]::Copy($inputBytes, $blockBytes, $inputBytes.Length)
         $block = New-Object System.Numerics.BigInteger -ArgumentList (,$blockBytes)
@@ -601,13 +606,21 @@ function Get-PortalLoginBody {
         if ([string]::IsNullOrWhiteSpace($mac)) {
             $mac = '111111111'
         }
-        $passwordValue = ConvertTo-PortalRsaHex -Text ($Password + '>' + $mac) -ExponentHex ([string]$PageInfo.publicKeyExponent) -ModulusHex ([string]$PageInfo.publicKeyModulus)
+        # The portal's JavaScript reverses the complete password-and-device value
+        # before applying raw RSA encryption.
+        $passwordWithMac = $Password + '>' + $mac
+        $characters = $passwordWithMac.ToCharArray()
+        [Array]::Reverse($characters)
+        $passwordValue = ConvertTo-PortalRsaHex -Text (-join $characters) -ExponentHex ([string]$PageInfo.publicKeyExponent) -ModulusHex ([string]$PageInfo.publicKeyModulus)
     }
     elseif ($encrypt -ne 'true' -and $Password.Length -gt 150) {
         $encrypt = 'true'
     }
 
-    $usernameValue = [string]$Configuration.Portal.UsernamePrefix + $Username.Trim()
+    # The portal displays its account category prefix as an optional checkbox.
+    # Use it only when the user has explicitly configured that account format.
+    $usernamePrefix = [string]$Configuration.Portal.UsernamePrefix
+    $usernameValue = $usernamePrefix + $Username.Trim()
     $queryString = [string]$PortalContext.QueryString
     $fields = [ordered]@{
         userId = $usernameValue
@@ -626,7 +639,7 @@ function Get-PortalLoginBody {
     return ($parts -join '&')
 }
 
-function Invoke-PortalLogin {
+function Invoke-PortalApiLogin {
     param(
         [Parameter(Mandatory = $true)]$Configuration,
         [Parameter(Mandatory = $true)][string]$Username,
@@ -656,6 +669,128 @@ function Invoke-PortalLogin {
         Write-Log ('Portal login request failed: {0}' -f $_.Exception.Message) 'WARN'
         return $false
     }
+}
+
+function Invoke-PortalBrowserLogin {
+    param(
+        [Parameter(Mandatory = $true)]$Configuration,
+        [Parameter(Mandatory = $true)][string]$Username,
+        [Parameter(Mandatory = $true)][string]$Password
+    )
+
+    # The campus login page owns its encryption and service-selection rules.
+    # Use its script when Internet Explorer's built-in automation component is
+    # available, then fall back to the API implementation on unsupported PCs.
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
+        Write-Log 'Webpage authentication is unavailable outside an STA thread; using the API fallback.' 'WARN'
+        return $null
+    }
+
+    $browser = $null
+    try {
+        $portalContext = Get-PortalContext -Configuration $Configuration
+        if ([string]::IsNullOrWhiteSpace([string]$portalContext.QueryString)) {
+            Write-Log 'Webpage authentication needs a captive-portal context.' 'WARN'
+            return $null
+        }
+
+        $baseUrl = ([string]$Configuration.Portal.BaseUrl).TrimEnd('/')
+        $loginUrl = '{0}/eportal/index.jsp?{1}' -f $baseUrl, [string]$portalContext.QueryString
+        $browser = New-Object -ComObject InternetExplorer.Application
+        $browser.Visible = $false
+        $browser.Silent = $true
+        $browser.Left = -32000
+        $browser.Top = -32000
+        $browser.Width = 1
+        $browser.Height = 1
+        $browser.MenuBar = $false
+        $browser.StatusBar = $false
+        $browser.ToolBar = 0
+        [void]$browser.Navigate2($loginUrl)
+
+        $deadline = (Get-Date).AddSeconds(20)
+        $document = $null
+        while ((Get-Date) -lt $deadline) {
+            try {
+                if (-not $browser.Busy -and [int]$browser.ReadyState -eq 4) {
+                    $candidate = $browser.Document
+                    $usernameField = $candidate.getElementById('username')
+                    $passwordField = $candidate.getElementById('pwd')
+                    $encryptField = $candidate.getElementById('passwordEncrypt')
+                    $modulusField = $candidate.getElementById('publicKeyModulus')
+                    $encryptionReady = ($null -ne $encryptField -and [string]$encryptField.value -ne 'true') -or
+                        ($null -ne $modulusField -and -not [string]::IsNullOrWhiteSpace([string]$modulusField.value))
+                    if ($null -ne $usernameField -and $null -ne $passwordField -and $encryptionReady) {
+                        $document = $candidate
+                        break
+                    }
+                }
+            }
+            catch {
+                # The document is being replaced while the portal initializes.
+            }
+            Start-Sleep -Milliseconds 250
+        }
+
+        if ($null -eq $document) {
+            Write-Log 'Webpage authentication could not load the portal login form.' 'WARN'
+            return $null
+        }
+
+        $document.getElementById('username').value = $Username.Trim()
+        $document.getElementById('pwd').value = $Password
+        if (-not [string]::IsNullOrWhiteSpace([string]$Configuration.Portal.UsernamePrefix)) {
+            [void]$document.parentWindow.execScript('chooseTj();', 'JavaScript')
+        }
+
+        $loginLink = $document.getElementById('loginLink')
+        if ($null -ne $loginLink) {
+            $loginLink.click()
+        }
+        else {
+            [void]$document.parentWindow.execScript('doauthen();', 'JavaScript')
+        }
+
+        Start-Sleep -Seconds 6
+        try {
+            $errorElement = $browser.Document.getElementById('errorInfo_center')
+            $errorMessage = if ($null -ne $errorElement) { [string]$errorElement.innerText } else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($errorMessage)) {
+                Write-Log ('Webpage portal login rejected: {0}' -f $errorMessage.Trim()) 'WARN'
+                return $false
+            }
+        }
+        catch {
+            # The page may redirect immediately after a successful login.
+        }
+
+        Write-Log 'Webpage portal login submitted.'
+        return $true
+    }
+    catch {
+        Write-Log ('Webpage authentication is unavailable: {0}' -f $_.Exception.Message) 'WARN'
+        return $null
+    }
+    finally {
+        if ($null -ne $browser) {
+            try { $browser.Quit() } catch {}
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($browser)
+        }
+    }
+}
+
+function Invoke-PortalLogin {
+    param(
+        [Parameter(Mandatory = $true)]$Configuration,
+        [Parameter(Mandatory = $true)][string]$Username,
+        [Parameter(Mandatory = $true)][string]$Password
+    )
+
+    $browserResult = Invoke-PortalBrowserLogin -Configuration $Configuration -Username $Username -Password $Password
+    if ($null -ne $browserResult) {
+        return [bool]$browserResult
+    }
+    return (Invoke-PortalApiLogin -Configuration $Configuration -Username $Username -Password $Password)
 }
 
 function Send-NotificationEmail {
@@ -1071,7 +1206,8 @@ function Stop-MonitorTask {
 function Invoke-Monitor {
     param(
         [Parameter(Mandatory = $true)]$Configuration,
-        [switch]$RunOnce
+        [switch]$RunOnce,
+        [switch]$ForceAuthentication
     )
 
     $campusPassword = [string]$Configuration.Credentials.Password
@@ -1084,6 +1220,9 @@ function Invoke-Monitor {
     }
 
     $authAttempts = [int]$Configuration.Runtime.AuthAttempts
+    if ($ForceAuthentication) {
+        $authAttempts = 1
+    }
     $authDelay = [int]$Configuration.Runtime.AuthRetryDelaySeconds
     $afterAuthWait = [int]$Configuration.Runtime.AfterAuthWaitSeconds
     $interval = [int]$Configuration.Check.IntervalSeconds
@@ -1101,7 +1240,7 @@ function Invoke-Monitor {
         }
 
         do {
-            $online = Test-InternetConnection -Configuration $Configuration
+            $online = if ($ForceAuthentication) { $false } else { Test-InternetConnection -Configuration $Configuration }
             if ($online) {
                 Write-Log 'Internet check passed.'
                 if ($lastState -eq $false) {
@@ -1191,6 +1330,10 @@ try {
     }
     if ($RepairTasks) {
         Repair-Tasks -Configuration $configuration
+        exit 0
+    }
+    if ($ForceAuthenticate) {
+        Invoke-Monitor -Configuration $configuration -RunOnce -ForceAuthentication
         exit 0
     }
     if ($StopTask) {
