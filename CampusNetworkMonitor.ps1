@@ -469,10 +469,105 @@ function Invoke-PortalRequest {
     return Invoke-WebRequest -Uri $uri -Method Post -Body $Body -ContentType 'application/x-www-form-urlencoded; charset=UTF-8' -UseBasicParsing -TimeoutSec 10 -UserAgent 'CampusNetworkMonitor/1.0'
 }
 
-function Get-PortalPageInfo {
+function Get-QueryStringParameterValue {
+    param(
+        [AllowEmptyString()][string]$QueryString,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $query = $QueryString.Trim().TrimStart('?')
+    foreach ($part in ($query -split '&')) {
+        if ([string]::IsNullOrWhiteSpace($part)) {
+            continue
+        }
+        $separator = $part.IndexOf('=')
+        $rawName = if ($separator -ge 0) { $part.Substring(0, $separator) } else { $part }
+        if ([System.Uri]::UnescapeDataString($rawName.Replace('+', ' ')) -ieq $Name) {
+            $rawValue = if ($separator -ge 0) { $part.Substring($separator + 1) } else { '' }
+            return [System.Uri]::UnescapeDataString($rawValue.Replace('+', ' '))
+        }
+    }
+    return ''
+}
+
+function Get-CaptivePortalQueryString {
     param([Parameter(Mandatory = $true)]$Configuration)
 
-    $queryString = ConvertTo-DoubleUrlEncoded -Value ([string]$Configuration.Portal.QueryString)
+    try {
+        $portalHost = ([System.Uri]([string]$Configuration.Portal.BaseUrl)).Host
+    }
+    catch {
+        return ''
+    }
+
+    foreach ($probeUri in @('http://www.baidu.com/', 'http://neverssl.com/')) {
+        $response = $null
+        try {
+            try {
+                $response = Invoke-WebRequest -Uri $probeUri -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 8 -UserAgent 'CampusNetworkMonitor/1.0' -ErrorAction Stop
+            }
+            catch [System.Net.WebException] {
+                $response = $_.Exception.Response
+            }
+
+            if (-not $response) {
+                continue
+            }
+            $location = [string]$response.Headers['Location']
+            if ([string]::IsNullOrWhiteSpace($location)) {
+                continue
+            }
+
+            try {
+                $redirectUri = New-Object -TypeName System.Uri -ArgumentList @([System.Uri]$probeUri, $location)
+            }
+            catch {
+                continue
+            }
+            if ($redirectUri.Host -ieq $portalHost) {
+                $queryString = $redirectUri.Query.TrimStart('?')
+                if (-not [string]::IsNullOrWhiteSpace($queryString)) {
+                    return $queryString
+                }
+            }
+        }
+        finally {
+            if ($response -and $response -is [System.IDisposable]) {
+                $response.Dispose()
+            }
+        }
+    }
+    return ''
+}
+
+function Get-PortalContext {
+    param([Parameter(Mandatory = $true)]$Configuration)
+
+    $configuredQueryString = [string]$Configuration.Portal.QueryString
+    $capturedQueryString = Get-CaptivePortalQueryString -Configuration $Configuration
+    $queryString = if ([string]::IsNullOrWhiteSpace($capturedQueryString)) { $configuredQueryString } else { $capturedQueryString }
+    if (-not [string]::IsNullOrWhiteSpace($capturedQueryString)) {
+        Write-Log 'Captured the current captive-portal context for authentication.'
+    }
+
+    $mac = Get-QueryStringParameterValue -QueryString $queryString -Name 'mac'
+    if ([string]::IsNullOrWhiteSpace($mac)) {
+        $mac = [string]$Configuration.Portal.Mac
+    }
+
+    return [pscustomobject]@{
+        QueryString = $queryString
+        Mac = $mac
+    }
+}
+
+function Get-PortalPageInfo {
+    param(
+        [Parameter(Mandatory = $true)]$Configuration,
+        [Parameter(Mandatory = $true)]$PortalContext
+    )
+
+    $queryString = ConvertTo-DoubleUrlEncoded -Value ([string]$PortalContext.QueryString)
     $body = 'queryString={0}' -f $queryString
     $response = Invoke-PortalRequest -Configuration $Configuration -Method 'pageInfo' -Body $body
     if ([string]::IsNullOrWhiteSpace($response.Content)) {
@@ -486,7 +581,8 @@ function Get-PortalLoginBody {
         [Parameter(Mandatory = $true)]$Configuration,
         [Parameter(Mandatory = $true)][string]$Username,
         [Parameter(Mandatory = $true)][string]$Password,
-        [Parameter(Mandatory = $true)]$PageInfo
+        [Parameter(Mandatory = $true)]$PageInfo,
+        [Parameter(Mandatory = $true)]$PortalContext
     )
 
     $service = [string]$Configuration.Portal.Service
@@ -501,7 +597,7 @@ function Get-PortalLoginBody {
 
     $passwordValue = $Password
     if ($encrypt -eq 'true' -and $Password.Length -lt 150) {
-        $mac = [string]$Configuration.Portal.Mac
+        $mac = [string]$PortalContext.Mac
         if ([string]::IsNullOrWhiteSpace($mac)) {
             $mac = '111111111'
         }
@@ -512,7 +608,7 @@ function Get-PortalLoginBody {
     }
 
     $usernameValue = [string]$Configuration.Portal.UsernamePrefix + $Username.Trim()
-    $queryString = [string]$Configuration.Portal.QueryString
+    $queryString = [string]$PortalContext.QueryString
     $fields = [ordered]@{
         userId = $usernameValue
         password = $passwordValue
@@ -538,8 +634,9 @@ function Invoke-PortalLogin {
     )
 
     try {
-        $pageInfo = Get-PortalPageInfo -Configuration $Configuration
-        $body = Get-PortalLoginBody -Configuration $Configuration -Username $Username -Password $Password -PageInfo $pageInfo
+        $portalContext = Get-PortalContext -Configuration $Configuration
+        $pageInfo = Get-PortalPageInfo -Configuration $Configuration -PortalContext $portalContext
+        $body = Get-PortalLoginBody -Configuration $Configuration -Username $Username -Password $Password -PageInfo $pageInfo -PortalContext $portalContext
         $response = Invoke-PortalRequest -Configuration $Configuration -Method 'login' -Body $body
         if ([string]::IsNullOrWhiteSpace($response.Content)) {
             Write-Log 'Portal login response is empty.' 'WARN'
