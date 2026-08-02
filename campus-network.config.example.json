@@ -1,0 +1,39 @@
+{
+  "Check": {
+    "Host": "www.baidu.com",
+    "Count": 1,
+    "RetryCount": 2,
+    "RetryIntervalSeconds": 3,
+    "IntervalSeconds": 60
+  },
+  "Portal": {
+    "BaseUrl": "http://10.10.9.9",
+    "ApiPath": "/eportal/InterFace.do",
+    "Service": "shu",
+    "QueryString": "",
+    "Mac": "",
+    "UsernamePrefix": ""
+  },
+  "Credentials": {
+    "Username": "",
+    "Password": ""
+  },
+  "Email": {
+    "Enabled": false,
+    "Address": "",
+    "Recipient": "",
+    "Password": "",
+    "SmtpServer": "",
+    "Port": 587,
+    "UseSsl": true,
+    "SubjectPrefix": "[Campus network] "
+  },
+  "Runtime": {
+    "AuthAttempts": 3,
+    "AuthRetryDelaySeconds": 5,
+    "AfterAuthWaitSeconds": 3,
+    "NotificationCooldownMinutes": 30,
+    "LogFile": "campus-network-monitor.log",
+    "TaskName": "CampusNetworkMonitor"
+  }
+}

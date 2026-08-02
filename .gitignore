@@ -1,0 +1,9 @@
+# Personal credentials and machine-specific runtime data. Never commit these.
+campus-network.config.json
+campus-network-monitor.log
+*.log
+
+# Temporary files created while editing or packaging.
+*.tmp
+*.bak
+*.ps1~
