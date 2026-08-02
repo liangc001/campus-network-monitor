@@ -10,6 +10,7 @@ param(
     [switch]$DisableStartup,
     [switch]$RepairTasks,
     [switch]$ForceAuthenticate,
+    [switch]$Background,
     [switch]$ShowConfig,
     [string]$EntryPath = ''
 )
@@ -75,6 +76,7 @@ if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
 $script:ConfigPathFull = [System.IO.Path]::GetFullPath($ConfigPath)
 $script:ConfigDirectory = Split-Path -Parent $script:ConfigPathFull
 $script:LogPath = $null
+$script:SuppressHostOutput = [bool]$Background
 
 function Resolve-ConfigFilePath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -92,13 +94,17 @@ function Write-Log {
     )
 
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    Write-Host $line
+    if (-not $script:SuppressHostOutput) {
+        Write-Host $line
+    }
     if ($script:LogPath) {
         try {
             Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8
         }
         catch {
-            Write-Host ('Log write failed: {0}' -f $_.Exception.Message)
+            if (-not $script:SuppressHostOutput) {
+                Write-Host ('Log write failed: {0}' -f $_.Exception.Message)
+            }
         }
     }
 }

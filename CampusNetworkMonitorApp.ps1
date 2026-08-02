@@ -65,6 +65,7 @@ if ($monitorModeRequested) {
     if ($DisableStartup) { $monitorParameters['DisableStartup'] = $true }
     if ($RepairTasks) { $monitorParameters['RepairTasks'] = $true }
     if ($ForceAuthenticate) { $monitorParameters['ForceAuthenticate'] = $true }
+    if ($RunMonitor) { $monitorParameters['Background'] = $true }
     if ($ShowConfig) { $monitorParameters['ShowConfig'] = $true }
 
     # Invoke the component from its text so restrictive execution policies do
