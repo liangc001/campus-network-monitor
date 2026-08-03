@@ -1339,9 +1339,11 @@ function Invoke-Monitor {
 
                 if ($authenticated) {
                     Write-Log 'Network restored after portal re-authentication.'
-                    if ($lastState -ne $true) {
-                        [void](Send-NotificationEmail -Configuration $Configuration -Subject 'Network re-authenticated' -Body ('Campus network was re-authenticated successfully at {0}.' -f (Get-Date)))
-                    }
+                    # Re-authentication is an event in its own right. The
+                    # previous ping state can still be online immediately
+                    # before the portal session expires, so it must not
+                    # suppress this notification.
+                    [void](Send-NotificationEmail -Configuration $Configuration -Subject 'Network re-authenticated' -Body ('Campus network was re-authenticated successfully at {0}.' -f (Get-Date)))
                     $lastState = $true
                 }
                 else {
