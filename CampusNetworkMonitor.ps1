@@ -948,7 +948,7 @@ function Install-MonitorTask {
         }
     }
 
-    $action = New-ApplicationTaskAction -ScriptPath $script:SourceScriptPathFull -ExecutablePath $script:MonitorExecutablePath -Arguments $arguments
+    $action = New-ApplicationTaskAction -ScriptPath $script:SourceScriptPathFull -ExecutablePath $script:MonitorExecutablePath -Arguments $arguments -HideWindow
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
     $trigger.Enabled = $startupEnabled
     $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) -LogonType Interactive -RunLevel Limited
@@ -1006,7 +1006,8 @@ function Test-TaskActionMatchesExecutable {
     param(
         [Parameter(Mandatory = $true)][string]$TaskName,
         [Parameter(Mandatory = $true)][string]$ExecutablePath,
-        [string]$ExpectedArguments = ''
+        [string]$ExpectedArguments = '',
+        [switch]$HideWindow
     )
 
     try {
@@ -1019,6 +1020,14 @@ function Test-TaskActionMatchesExecutable {
         $registeredExecutable = ([string]$action.Execute).Trim().Trim('"')
         if ([string]::IsNullOrWhiteSpace($registeredExecutable) -or -not (Test-Path -LiteralPath $registeredExecutable -PathType Leaf)) {
             return $false
+        }
+        if ($HideWindow) {
+            $launcherPath = Join-Path $PSHOME 'powershell.exe'
+            if ([System.IO.Path]::GetFullPath($registeredExecutable) -ine [System.IO.Path]::GetFullPath($launcherPath)) {
+                return $false
+            }
+            $expectedLauncherArguments = Get-HiddenLauncherArguments -ExecutablePath $ExecutablePath -Arguments $ExpectedArguments
+            return ([string]$action.Arguments).Trim() -ieq $expectedLauncherArguments.Trim()
         }
         if ([System.IO.Path]::GetFullPath($registeredExecutable) -ine [System.IO.Path]::GetFullPath($ExecutablePath)) {
             return $false
@@ -1033,11 +1042,25 @@ function Test-TaskActionMatchesExecutable {
     }
 }
 
+function Get-HiddenLauncherArguments {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [string]$Arguments = ''
+    )
+
+    $escapedExecutable = $ExecutablePath.Replace("'", "''")
+    $escapedArguments = $Arguments.Replace("'", "''")
+    $command = "Start-Process -FilePath '$escapedExecutable' -ArgumentList '$escapedArguments' -WindowStyle Hidden -Wait"
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
+    return ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {0}' -f $encoded)
+}
+
 function New-ApplicationTaskAction {
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
         [Parameter(Mandatory = $true)][string]$ExecutablePath,
-        [string]$Arguments = ''
+        [string]$Arguments = '',
+        [switch]$HideWindow
     )
 
     if ($script:SingleExecutableMode -and -not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
@@ -1046,6 +1069,16 @@ function New-ApplicationTaskAction {
 
     if (Test-Path -LiteralPath $ExecutablePath -PathType Leaf) {
         $workingDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($ExecutablePath))
+        if ($HideWindow) {
+            $powershell = Join-Path $PSHOME 'powershell.exe'
+            $launcherArguments = Get-HiddenLauncherArguments -ExecutablePath ([System.IO.Path]::GetFullPath($ExecutablePath)) -Arguments $Arguments
+            try {
+                return New-ScheduledTaskAction -Execute $powershell -Argument $launcherArguments -WorkingDirectory $workingDirectory
+            }
+            catch {
+                return New-ScheduledTaskAction -Execute $powershell -Argument $launcherArguments
+            }
+        }
         try {
             return New-ScheduledTaskAction -Execute ([System.IO.Path]::GetFullPath($ExecutablePath)) -Argument $Arguments -WorkingDirectory $workingDirectory
         }
@@ -1114,7 +1147,7 @@ function Repair-Tasks {
     $monitorTaskName = [string]$Configuration.Runtime.TaskName
     if ([string]::IsNullOrWhiteSpace($monitorTaskName)) { $monitorTaskName = 'CampusNetworkMonitor' }
     $monitorArguments = Get-MonitorTaskArguments
-    if (Test-TaskActionMatchesExecutable -TaskName $monitorTaskName -ExecutablePath $script:MonitorExecutablePath -ExpectedArguments $monitorArguments) {
+    if (Test-TaskActionMatchesExecutable -TaskName $monitorTaskName -ExecutablePath $script:MonitorExecutablePath -ExpectedArguments $monitorArguments -HideWindow) {
         Write-Host ('Monitor task already points to the current program: {0}' -f $monitorTaskName)
     }
     else {
