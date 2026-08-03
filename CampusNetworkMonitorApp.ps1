@@ -72,7 +72,15 @@ if ($monitorModeRequested) {
     # not block a companion .ps1 file when the user starts the packaged exe.
     $monitorSource = Get-Content -LiteralPath $monitorScriptPath -Raw -Encoding UTF8
     $monitorCommand = [scriptblock]::Create($monitorSource)
-    & $monitorCommand @monitorParameters
+    # PS2EXE can materialize Write-Host and information-stream output as a
+    # transient GUI window. Scheduled monitoring already writes to the log
+    # file, so discard every host stream in the background entry point.
+    if ($RunMonitor) {
+        & $monitorCommand @monitorParameters *> $null
+    }
+    else {
+        & $monitorCommand @monitorParameters
+    }
     if (-not $?) {
         exit 1
     }
@@ -681,35 +689,10 @@ function Start-BackendOperation {
 }
 
 function Start-DetachedMonitor {
-    $psi = New-Object -TypeName System.Diagnostics.ProcessStartInfo
-    $singleExecutablePath = Get-SingleExecutablePath
-    if (-not [string]::IsNullOrWhiteSpace($singleExecutablePath)) {
-        $psi.FileName = $singleExecutablePath
-        $psi.Arguments = '-RunMonitor -EntryPath "{0}" -ConfigPath "{1}"' -f $singleExecutablePath, $script:ConfigPath
-    }
-    elseif (Test-Path -LiteralPath $script:MonitorScript -PathType Leaf) {
-        $psi.FileName = $script:PowerShellPath
-        $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -ConfigPath "{1}"' -f $script:MonitorScript, $script:ConfigPath
-    }
-    else {
-        throw ('找不到后台监控程序：{0}' -f $script:MonitorExecutable)
-    }
-
-    $psi.WorkingDirectory = $script:Directory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-
-    $process = New-Object -TypeName System.Diagnostics.Process
-    $process.StartInfo = $psi
-    try {
-        if (-not $process.Start()) {
-            throw '无法启动后台监控程序。'
-        }
-    }
-    finally {
-        $process.Dispose()
-    }
+    # The task uses WScript to create the monitor with no visible window.
+    # Starting the executable directly here can briefly show PS2EXE's output
+    # form, even when ProcessStartInfo requests a hidden window.
+    Start-ScheduledTask -TaskName 'CampusNetworkMonitor' -ErrorAction Stop
 
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         if (Test-MonitorRunning) {
@@ -755,6 +738,7 @@ function Get-ApplicationFiles {
         (Join-Path $script:Directory 'CampusNetworkMenu.ps1')
         (Join-Path $script:Directory 'CampusNetworkMenu.bat')
         (Join-Path $script:Directory 'CampusNetworkMonitor.ico')
+        (Join-Path $script:Directory 'CampusNetworkMonitorLauncher.vbs')
         (Join-Path $script:Directory 'campus-network.config.json')
         (Join-Path $script:Directory 'campus-network-monitor.log')
         (Join-Path $script:Directory 'README.md')

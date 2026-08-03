@@ -76,7 +76,7 @@ if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
 $script:ConfigPathFull = [System.IO.Path]::GetFullPath($ConfigPath)
 $script:ConfigDirectory = Split-Path -Parent $script:ConfigPathFull
 $script:LogPath = $null
-$script:SuppressHostOutput = [bool]$Background
+$script:SuppressHostOutput = [bool]$Background -or (@([Environment]::GetCommandLineArgs()) -contains '-RunMonitor')
 
 function Resolve-ConfigFilePath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -1022,7 +1022,7 @@ function Test-TaskActionMatchesExecutable {
             return $false
         }
         if ($HideWindow) {
-            $launcherPath = Join-Path $PSHOME 'powershell.exe'
+            $launcherPath = Join-Path $env:WINDIR 'System32\wscript.exe'
             if ([System.IO.Path]::GetFullPath($registeredExecutable) -ine [System.IO.Path]::GetFullPath($launcherPath)) {
                 return $false
             }
@@ -1042,17 +1042,44 @@ function Test-TaskActionMatchesExecutable {
     }
 }
 
+function Get-HiddenLauncherPath {
+    return (Join-Path $script:ScriptDirectory 'CampusNetworkMonitorLauncher.vbs')
+}
+
+function Ensure-HiddenLauncherScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [string]$Arguments = ''
+    )
+
+    # WScript starts the compiled monitor with SW_HIDE from process creation.
+    # This is more reliable than a second PowerShell process, which can briefly
+    # expose PS2EXE's output window during portal re-authentication.
+    $launcherPath = Get-HiddenLauncherPath
+    $vbsExecutable = $ExecutablePath.Replace('"', '""')
+    $vbsArguments = $Arguments.Replace('"', '""')
+    $content = @"
+Option Explicit
+Dim shell, target, arguments, command
+target = "$vbsExecutable"
+arguments = "$vbsArguments"
+Set shell = CreateObject("WScript.Shell")
+command = Chr(34) & target & Chr(34)
+If Len(arguments) > 0 Then command = command & " " & arguments
+shell.Run command, 0, True
+"@
+    Set-Content -LiteralPath $launcherPath -Value $content -Encoding ASCII
+    return $launcherPath
+}
+
 function Get-HiddenLauncherArguments {
     param(
         [Parameter(Mandatory = $true)][string]$ExecutablePath,
         [string]$Arguments = ''
     )
 
-    $escapedExecutable = $ExecutablePath.Replace("'", "''")
-    $escapedArguments = $Arguments.Replace("'", "''")
-    $command = "Start-Process -FilePath '$escapedExecutable' -ArgumentList '$escapedArguments' -WindowStyle Hidden -Wait"
-    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
-    return ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {0}' -f $encoded)
+    $launcherPath = Ensure-HiddenLauncherScript -ExecutablePath $ExecutablePath -Arguments $Arguments
+    return ('//B //NoLogo "{0}"' -f $launcherPath)
 }
 
 function New-ApplicationTaskAction {
@@ -1070,13 +1097,16 @@ function New-ApplicationTaskAction {
     if (Test-Path -LiteralPath $ExecutablePath -PathType Leaf) {
         $workingDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($ExecutablePath))
         if ($HideWindow) {
-            $powershell = Join-Path $PSHOME 'powershell.exe'
+            $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+            if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) {
+                throw ('Windows Script Host 不可用，无法创建静默监控任务：{0}' -f $wscript)
+            }
             $launcherArguments = Get-HiddenLauncherArguments -ExecutablePath ([System.IO.Path]::GetFullPath($ExecutablePath)) -Arguments $Arguments
             try {
-                return New-ScheduledTaskAction -Execute $powershell -Argument $launcherArguments -WorkingDirectory $workingDirectory
+                return New-ScheduledTaskAction -Execute $wscript -Argument $launcherArguments -WorkingDirectory $workingDirectory
             }
             catch {
-                return New-ScheduledTaskAction -Execute $powershell -Argument $launcherArguments
+                return New-ScheduledTaskAction -Execute $wscript -Argument $launcherArguments
             }
         }
         try {

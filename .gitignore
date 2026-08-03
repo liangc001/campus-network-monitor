@@ -7,3 +7,5 @@ campus-network-monitor.log
 *.tmp
 *.bak
 *.ps1~
+CampusNetworkMonitorLauncher.vbs
+CampusNetworkMonitor.previous.backup
