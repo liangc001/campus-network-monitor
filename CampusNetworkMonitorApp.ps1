@@ -19,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 $monitorModeRequested = $RunMonitor -or $Once -or $Setup -or $InstallTask -or $StopTask -or $UninstallTask -or $EnableStartup -or $DisableStartup -or $RepairTasks -or $ForceAuthenticate -or $ShowConfig
 if ($monitorModeRequested) {
