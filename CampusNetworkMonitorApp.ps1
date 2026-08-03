@@ -694,7 +694,9 @@ function Start-DetachedMonitor {
     # form, even when ProcessStartInfo requests a hidden window.
     Start-ScheduledTask -TaskName 'CampusNetworkMonitor' -ErrorAction Stop
 
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    # A newly copied exe can take several seconds to start while Windows
+    # performs its first security scan. Do not report a false startup failure.
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
         if (Test-MonitorRunning) {
             return
         }

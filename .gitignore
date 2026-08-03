@@ -8,4 +8,4 @@ campus-network-monitor.log
 *.bak
 *.ps1~
 CampusNetworkMonitorLauncher.vbs
-CampusNetworkMonitor.previous.backup
+*.backup
