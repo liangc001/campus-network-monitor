@@ -1068,7 +1068,9 @@ command = Chr(34) & target & Chr(34)
 If Len(arguments) > 0 Then command = command & " " & arguments
 shell.Run command, 0, True
 "@
-    Set-Content -LiteralPath $launcherPath -Value $content -Encoding ASCII
+    # WScript recognizes UTF-16 with a BOM, preserving Chinese characters in
+    # program paths after the folder is copied to another computer.
+    Set-Content -LiteralPath $launcherPath -Value $content -Encoding Unicode
     return $launcherPath
 }
 
