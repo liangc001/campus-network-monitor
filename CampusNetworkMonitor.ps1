@@ -373,6 +373,65 @@ function Stop-MonitorProcesses {
     return $processes.Count
 }
 
+function Test-ExpectedInternetHost {
+    param(
+        [Parameter(Mandatory = $true)][string]$CandidateHost,
+        [Parameter(Mandatory = $true)][string]$ExpectedHost
+    )
+
+    return ($CandidateHost -ieq $ExpectedHost) -or $CandidateHost.EndsWith(('.' + $ExpectedHost), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-HttpInternetConnection {
+    param([Parameter(Mandatory = $true)][string]$HostName)
+
+    $probeUri = 'http://{0}/' -f $HostName
+    $response = $null
+    try {
+        try {
+            $response = Invoke-WebRequest -Uri $probeUri -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 8 -UserAgent 'CampusNetworkMonitor/1.0' -ErrorAction Stop
+        }
+        catch [System.Net.WebException] {
+            $response = $_.Exception.Response
+        }
+
+        if ($null -eq $response) {
+            return $false
+        }
+
+        $location = [string]$response.Headers['Location']
+        if (-not [string]::IsNullOrWhiteSpace($location)) {
+            try {
+                $redirectUri = New-Object -TypeName System.Uri -ArgumentList @([System.Uri]$probeUri, $location)
+                return (Test-ExpectedInternetHost -CandidateHost $redirectUri.Host -ExpectedHost $HostName)
+            }
+            catch {
+                return $false
+            }
+        }
+
+        $responseUri = $null
+        if ($response.PSObject.Properties['BaseResponse']) {
+            $responseUri = $response.BaseResponse.ResponseUri
+        }
+        elseif ($response.PSObject.Properties['ResponseUri']) {
+            $responseUri = $response.ResponseUri
+        }
+        if ($null -eq $responseUri) {
+            return $false
+        }
+        return (Test-ExpectedInternetHost -CandidateHost $responseUri.Host -ExpectedHost $HostName)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($response -and $response -is [System.IDisposable]) {
+            $response.Dispose()
+        }
+    }
+}
+
 function Test-InternetConnection {
     param([Parameter(Mandatory = $true)]$Configuration)
 
@@ -382,13 +441,19 @@ function Test-InternetConnection {
     $retryDelay = [int]$Configuration.Check.RetryIntervalSeconds
 
     for ($attempt = 1; $attempt -le $retries; $attempt++) {
+        $pingSucceeded = $false
         try {
-            if (Test-Connection -ComputerName $hostName -Count $count -Quiet -ErrorAction SilentlyContinue) {
-                return $true
-            }
+            $pingSucceeded = Test-Connection -ComputerName $hostName -Count $count -Quiet -ErrorAction SilentlyContinue
         }
         catch {
             Write-Log ('Ping check error: {0}' -f $_.Exception.Message) 'WARN'
+        }
+
+        if ($pingSucceeded -and (Test-HttpInternetConnection -HostName $hostName)) {
+            return $true
+        }
+        if ($pingSucceeded) {
+            Write-Log 'Ping passed, but the HTTP internet check failed.' 'WARN'
         }
 
         if ($attempt -lt $retries -and $retryDelay -gt 0) {
